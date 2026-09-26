@@ -212,7 +212,8 @@ Uma prioridade elevada não garante, sozinha, um pequeno tempo de resposta. A ta
 
 ### Objetivo e diagrama
 
-Sincronizar a produção e o processamento de dados com um semáforo binário.
+Sincronizar a produção e o processamento de dados, comparando uma implementação
+com polling e outra com um semáforo binário.
 
 ```text
 [TaskSensor] --osSemaphoreRelease--> [Semáforo binário]
@@ -222,32 +223,89 @@ Sincronizar a produção e o processamento de dados com um semáforo binário.
 
 ### Implementação
 
-```c
-osSemaphoreId_t sensorSemHandle;
+O semáforo foi criado com uma unidade e contagem inicial zero. Assim, a tarefa de
+processamento começa bloqueada até que o sensor produza o primeiro dado.
 
-void TaskSensor(void *argument)
+#### Experimento A - Polling
+
+No primeiro experimento, o sensor indica a chegada de um dado por meio da
+variável global `novoDado`. A tarefa de processamento verifica continuamente essa
+variável, processa o dado e depois a zera.
+
+```c
+uint8_t novoDado = 0;
+
+void funTaskSensor(void *argument)
 {
 	for (;;) {
-		osDelay(1000);
-		printf("Sensor: novo dado coletado.\r\n");
-		osSemaphoreRelease(sensorSemHandle);
+		novoDado = 1;
+		HAL_UART_Transmit(&huart3, (uint8_t *)"Sensor Lido\r\n", 12, HAL_MAX_DELAY);
+		osDelay(5000);
 	}
 }
 
-void TaskProcessamento(void *argument)
+void funTaskProcesssamento(void *argument)
 {
 	for (;;) {
-		osSemaphoreAcquire(sensorSemHandle, osWaitForever);
-		printf("Processamento: dado processado com sucesso.\r\n");
+		if (novoDado == 1) {
+			HAL_UART_Transmit(&huart3, (uint8_t *)"Dado Processado\r\n", 17, HAL_MAX_DELAY);
+			novoDado = 0;
+			osDelay(100);
+		}
 	}
 }
 ```
 
+Na saída do terminal, a imagem A registra o comportamento dessa versão com
+polling: a tarefa de processamento consulta a flag repetidamente enquanto não há
+novo dado.
+
+![Experimento 3A - Polling](images/03-EXPA.png)
+
+#### Experimento B - Semáforo binário
+
+Na segunda versão, o sensor libera `sensorSemHandleHandle` após realizar a
+leitura. A tarefa de processamento aguarda o semáforo indefinidamente e só
+executa quando recebe essa sinalização.
+
+```c
+sensorSemHandleHandle = osSemaphoreNew(1, 0, &sensorSemHandle_attributes);
+
+void funTaskSensor(void *argument)
+{
+	for (;;) {
+		HAL_UART_Transmit(&huart3, (uint8_t *)"Sensor Lido\r\n", 12, HAL_MAX_DELAY);
+		osSemaphoreRelease(sensorSemHandleHandle);
+		osDelay(5000);
+	}
+}
+
+void funTaskProcesssamento(void *argument)
+{
+	for (;;) {
+		if (osSemaphoreAcquire(sensorSemHandleHandle, osWaitForever) == osOK) {
+			HAL_UART_Transmit(&huart3, (uint8_t *)"Entrou na Task\r\n", 16, HAL_MAX_DELAY);
+			HAL_UART_Transmit(&huart3, (uint8_t *)"Dado Processado\r\n", 17, HAL_MAX_DELAY);
+		}
+	}
+}
+```
+
+![Experimento 3B - Semáforo](images/03-EXPB.png)
+
 ### Análise
 
-No polling, a tarefa verifica continuamente uma flag e consome CPU mesmo quando não há dados. Com o semáforo, ela permanece em `Blocked` até o sensor sinalizar um novo dado. Assim, a solução com semáforo utiliza melhor a CPU e também reduz o consumo de energia.
+No polling, `funTaskProcesssamento` permanece no estado `Running` ou `Ready`
+consultando `novoDado`, mesmo quando nenhum dado está disponível. Além disso, a
+flag compartilhada exige cuidado para que a indicação não seja perdida ou lida
+incorretamente em uma implementação mais complexa.
 
-**Evidência:** captura do terminal comparando polling e semáforo será adicionada posteriormente.
+Com o semáforo binário, a tarefa de processamento passa ao estado `Blocked` em
+`osSemaphoreAcquire(..., osWaitForever)` e só retorna a `Ready` quando o sensor
+executa `osSemaphoreRelease()`. Portanto, essa solução evita o uso desnecessário
+da CPU e representa diretamente a relação produtor-consumidor. A saída da
+imagem B também evidencia a mensagem intermediária `Entrou na Task` antes de
+`Dado Processado`.
 
 ## Atividade 4 - Recursos limitados
 
